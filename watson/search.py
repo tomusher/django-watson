@@ -162,18 +162,6 @@ class SearchAdapter(object):
             for field_name in self.store
         )
 
-    def serialize_meta(self, obj):
-        """serialise meta ready to be saved in "meta_encoded"."""
-        meta_obj = self.get_meta(obj)
-        return json.dumps(meta_obj, cls=DjangoJSONEncoder)
-
-    def deserialize_meta(self, meta_encoded):
-        """
-        deserialize the encoded meta string for use in views etc., this is
-        used by SearchEntry's _deserialize_meta method to create the "meta" property
-        """
-        return json.loads(meta_encoded)
-
     def get_live_queryset(self):
         """
         Returns the queryset of objects that should be considered live.
@@ -504,7 +492,7 @@ class SearchEngine(object):
             "description": adapter.get_description(obj),
             "content": adapter.get_content(obj),
             "url": adapter.get_url(obj),
-            "meta_encoded": adapter.serialize_meta(obj),
+            "meta": adapter.get_meta(obj),
         }
         # Try to get the existing search entry.
         object_id_int, search_entries = self._get_entries_for_obj(obj)

@@ -118,25 +118,7 @@ class SearchEntry(models.Model):
         blank=True,
     )
 
-    meta_encoded = models.TextField()
-
-    def _deserialize_meta(self):
-        from watson.search import SearchEngine
-        engine = SearchEngine._created_engines[self.engine_slug]
-        model = ContentType.objects.get_for_id(self.content_type_id).model_class()
-        adapter = engine.get_adapter(model)
-        return adapter.deserialize_meta(self.meta_encoded)
-
-    @cached_property
-    def meta(self):
-        """Returns the meta information stored with the search entry."""
-        # Attempt to use the cached value.
-        if hasattr(self, META_CACHE_KEY):
-            return getattr(self, META_CACHE_KEY)
-        # Decode the meta.
-        meta_value = self._deserialize_meta()
-        setattr(self, META_CACHE_KEY, meta_value)
-        return meta_value
+    meta = models.JSONField()
 
     def get_absolute_url(self):
         """Returns the URL of the referenced object."""
