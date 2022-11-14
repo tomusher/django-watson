@@ -21,6 +21,7 @@ from django.db.models.signals import post_save, pre_delete
 from django.utils.encoding import force_str
 from django.utils.html import strip_tags
 from django.core.serializers.json import DjangoJSONEncoder
+
 try:
     from importlib import import_module
 except ImportError:
@@ -49,9 +50,16 @@ class SearchAdapter(object):
         """Initializes the search adapter."""
         self.model = model
 
-    def _resolve_field(self, obj, name):
+    def _resolve_callable_field(self, obj, field):
+        """Resolve the content of a model field that could be a callable"""
+        if callable(field):
+            return field(obj)
+        else:
+            return self._resolve_field(obj, field)
+
+    def _resolve_field(self, obj, field):
         """Resolves the content of the given model field."""
-        name_parts = name.split("__", 1)
+        name_parts = field.split("__", 1)
         prefix = name_parts[0]
         # If we're at the end of the resolve chain, return.
         if obj is None:
@@ -87,7 +95,10 @@ class SearchAdapter(object):
         # Look up recursive fields.
         if len(name_parts) == 2:
             if isinstance(value, (QuerySet, models.Manager)):
-                return " ".join(force_str(self._resolve_field(obj, name_parts[1])) for obj in value.all())
+                return " ".join(
+                    force_str(self._resolve_field(obj, name_parts[1]))
+                    for obj in value.all()
+                )
             return self._resolve_field(value, name_parts[1])
         # Resolve querysets.
         if isinstance(value, (QuerySet, models.Manager)):
@@ -138,16 +149,21 @@ class SearchAdapter(object):
         """
         # Get the field names to look up.
         field_names = self.fields or (
-            field.name for field in self.model._meta.fields if
-            isinstance(field, (models.CharField, models.TextField))
+            field.name
+            for field in self.model._meta.fields
+            if isinstance(field, (models.CharField, models.TextField))
         )
         # Exclude named fields.
-        field_names = (field_name for field_name in field_names if field_name not in self.exclude)
+        field_names = (
+            field_name for field_name in field_names if field_name not in self.exclude
+        )
         # Create the text.
-        return self.prepare_content(" ".join(
-            force_str(self._resolve_field(obj, field_name))
-            for field_name in field_names
-        ))
+        return self.prepare_content(
+            " ".join(
+                force_str(self._resolve_field(obj, field_name))
+                for field_name in field_names
+            )
+        )
 
     def get_url(self, obj):
         """Return the URL of the given obj."""
@@ -157,10 +173,16 @@ class SearchAdapter(object):
 
     def get_meta(self, obj):
         """Returns a dictionary of meta information about the given obj."""
-        return dict(
-            (field_name, self._resolve_field(obj, field_name))
-            for field_name in self.store
-        )
+        if isinstance(self.store, dict):
+            return {
+                key_name: self._resolve_callable_field(obj, field)
+                for key_name, field in self.store.items()
+            }
+        else:
+            return dict(
+                (field_name, self._resolve_field(obj, field_name))
+                for field_name in self.store
+            )
 
     def get_live_queryset(self):
         """
@@ -189,6 +211,7 @@ class SearchContextError(Exception):
 def _bulk_save_search_entries(search_entries, batch_size=100):
     """Creates the given search entry data in the most efficient way possible."""
     from watson.models import SearchEntry
+
     if search_entries:
         search_entries = iter(search_entries)
         while True:
@@ -246,9 +269,11 @@ class SearchContextManager(local):
         tasks, is_invalid = self._stack.pop()
         if not is_invalid:
             _bulk_save_search_entries(
-                list(chain.from_iterable(engine._update_obj_index_iter(obj)
-                                         for engine, obj in tasks)
-                     )
+                list(
+                    chain.from_iterable(
+                        engine._update_obj_index_iter(obj) for engine, obj in tasks
+                    )
+                )
             )
 
     # Context management.
@@ -303,6 +328,7 @@ class SearchContext(object):
 
     def __call__(self, func):
         """Allows this search index context to be used as a decorator."""
+
         @wraps(func)
         def do_search_context(*args, **kwargs):
             self.__enter__()
@@ -316,6 +342,7 @@ class SearchContext(object):
             finally:
                 if not exception:
                     self.__exit__(None, None, None)
+
         return do_search_context
 
 
@@ -384,7 +411,8 @@ class SearchEngine(object):
             raise RegistrationError(
                 "{model!r} is already registered with this search engine".format(
                     model=model,
-                ))
+                )
+            )
         # Perform any customization.
         if field_overrides:
             # Conversion to str is needed because Python 2 doesn't accept unicode for class name
@@ -410,9 +438,11 @@ class SearchEngine(object):
             model = model.model
         # Check for registration.
         if not self.is_registered(model):
-            raise RegistrationError("{model!r} is not registered with this search engine".format(
-                model=model,
-            ))
+            raise RegistrationError(
+                "{model!r} is not registered with this search engine".format(
+                    model=model,
+                )
+            )
         # Perform the unregistration.
         del self._registered_models[model]
         # Disconnect from the signalling framework.
@@ -427,34 +457,35 @@ class SearchEngine(object):
         """Returns the adapter associated with the given model."""
         if self.is_registered(model):
             return self._registered_models[model]
-        raise RegistrationError("{model!r} is not registered with this search engine".format(
-            model=model,
-        ))
+        raise RegistrationError(
+            "{model!r} is not registered with this search engine".format(
+                model=model,
+            )
+        )
 
     def _get_deleted_entries_for_model(self, model):
         """Returns a queryset of entries associated with deleted object instances of the given model"""
         from django.contrib.contenttypes.models import ContentType
         from watson.models import SearchEntry, has_int_pk, get_pk_output_field
+
         content_type = ContentType.objects.get_for_model(model)
-        object_id_field = 'object_id_int' if has_int_pk(model) else 'object_id'
+        object_id_field = "object_id_int" if has_int_pk(model) else "object_id"
         return SearchEntry.objects.annotate(
             # normalize the object id into a field of the correct type for the original table
             normalized_pk=Cast(object_id_field, get_pk_output_field(model))
         ).filter(
-            Q(content_type=content_type) &
-            Q(engine_slug=self._engine_slug) &
+            Q(content_type=content_type)
+            & Q(engine_slug=self._engine_slug)
+            &
             # subquery to get entries which cannot be found in the original table (when negated)
-            ~Q(
-                normalized_pk__in=models.Subquery(
-                    model.objects.all().values('pk')
-                )
-            )
+            ~Q(normalized_pk__in=models.Subquery(model.objects.all().values("pk")))
         )
 
     def _get_entries_for_obj(self, obj):
         """Returns a queryset of entries associate with the given obj."""
         from django.contrib.contenttypes.models import ContentType
         from watson.models import SearchEntry, has_int_pk, get_str_pk
+
         model = obj.__class__
         content_type = ContentType.objects.get_for_model(model)
         # Get the basic list of search entries.
@@ -481,6 +512,7 @@ class SearchEngine(object):
         """Either updates the given object index, or yields an unsaved search entry."""
         from django.contrib.contenttypes.models import ContentType
         from watson.models import SearchEntry, get_str_pk
+
         model = obj.__class__
         adapter = self.get_adapter(model)
         content_type = ContentType.objects.get_for_model(model)
@@ -500,11 +532,13 @@ class SearchEngine(object):
         update_count = search_entries.update(**search_entry_data)
         if update_count == 0:
             # This is the first time the entry was created.
-            search_entry_data.update((
-                ("content_type", content_type),
-                ("object_id", object_id),
-                ("object_id_int", object_id_int),
-            ))
+            search_entry_data.update(
+                (
+                    ("content_type", content_type),
+                    ("object_id", object_id),
+                    ("object_id_int", object_id_int),
+                )
+            )
             yield SearchEntry(**search_entry_data)
         elif update_count > 1:
             # Oh no! Somehow we've got duplicated search entries!
@@ -539,6 +573,7 @@ class SearchEngine(object):
         """Creates a filter for the given model/queryset list."""
         from django.contrib.contenttypes.models import ContentType
         from watson.models import has_int_pk
+
         filters = Q()
         for model in models:
             filter = Q()
@@ -553,10 +588,13 @@ class SearchEngine(object):
                     )
                 else:
                     queryset = queryset.annotate(
-                        watson_pk_str=RawSQL(backend.do_string_cast(
-                            connections[queryset.db],
-                            model._meta.pk.db_column or model._meta.pk.attname,
-                        ), ()),
+                        watson_pk_str=RawSQL(
+                            backend.do_string_cast(
+                                connections[queryset.db],
+                                model._meta.pk.db_column or model._meta.pk.attname,
+                            ),
+                            (),
+                        ),
                     ).values_list("watson_pk_str", flat=True)
                     filter &= Q(
                         object_id__in=queryset,
@@ -584,9 +622,12 @@ class SearchEngine(object):
                 else:
                     yield queryset.all()
 
-    def search(self, search_text, models=(), exclude=(), ranking=True, backend_name=None):
+    def search(
+        self, search_text, models=(), exclude=(), ranking=True, backend_name=None
+    ):
         """Performs a search using the given text, returning a queryset of SearchEntry."""
         from watson.models import SearchEntry
+
         backend = get_backend(backend_name=backend_name)
         # Check for blank search text.
         search_text = search_text.strip()
@@ -599,14 +640,14 @@ class SearchEngine(object):
         # Process the allowed models.
         queryset = queryset.filter(
             self._create_model_filter(self._get_included_models(models), backend)
-        ).exclude(
-            self._create_model_filter(exclude, backend)
-        )
+        ).exclude(self._create_model_filter(exclude, backend))
         # Perform the backend-specific full text match.
         queryset = backend.do_search(self._engine_slug, queryset, search_text)
         # Perform the backend-specific full-text ranking.
         if ranking:
-            queryset = backend.do_search_ranking(self._engine_slug, queryset, search_text)
+            queryset = backend.do_search_ranking(
+                self._engine_slug, queryset, search_text
+            )
         # Return the complete queryset.
         return queryset
 
@@ -627,7 +668,9 @@ class SearchEngine(object):
         queryset = backend.do_filter(self._engine_slug, queryset, search_text)
         # Perform the backend-specific full-text ranking.
         if ranking:
-            queryset = backend.do_filter_ranking(self._engine_slug, queryset, search_text)
+            queryset = backend.do_filter_ranking(
+                self._engine_slug, queryset, search_text
+            )
         # Return the complete queryset.
         return queryset
 
@@ -644,7 +687,9 @@ def get_backend(backend_name=None):
     """Initializes and returns the search backend."""
     global _backends_cache
     if not backend_name:
-        backend_name = getattr(settings, "WATSON_BACKEND", "watson.backends.AdaptiveSearchBackend")
+        backend_name = getattr(
+            settings, "WATSON_BACKEND", "watson.backends.AdaptiveSearchBackend"
+        )
     # Try to use the cached backend.
     if backend_name in _backends_cache:
         return _backends_cache[backend_name]
@@ -658,7 +703,8 @@ def get_backend(backend_name=None):
             "Could not find a class named {backend_module_name!r} in {backend_cls_name!r}".format(
                 backend_module_name=backend_module_name,
                 backend_cls_name=backend_cls_name,
-            ))
+            )
+        )
     # Initialize the backend.
     backend = backend_cls()
     _backends_cache[backend_name] = backend
