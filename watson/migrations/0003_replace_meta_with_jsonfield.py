@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("watson", "0001_initial"),
+        ("watson", "0002_alter_searchentry_object_id"),
     ]
 
     operations = [
